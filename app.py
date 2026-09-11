@@ -1,12 +1,12 @@
 """
 Library Book Management System
 Flask web application with Azure SQL Server backend for managing books.
-Uses raw SQL queries via pyodbc (no ORM).
+Uses raw SQL queries via pymssql (no ORM).
 """
 
 import os
 from flask import Flask, render_template, request, redirect, url_for, flash
-import pyodbc
+import pymssql
 
 app = Flask(__name__)
 app.secret_key = "library-secret-key"  # Needed for flash messages
@@ -17,29 +17,26 @@ def get_db_connection():
     Creates and returns a new Azure SQL Server database connection.
     Reads connection details from environment variables so that
     credentials are never hardcoded in the source code.
-    Uses the ODBC Driver 18 for SQL Server.
+    Uses pymssql for direct connection to SQL Server.
     """
     server = os.environ.get("DB_HOST", "localhost")
     user = os.environ.get("DB_USER", "")
     password = os.environ.get("DB_PASS", "")
     database = os.environ.get("DB_NAME", "")
 
-    connection_string = (
-        f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-        f"SERVER={server};"
-        f"DATABASE={database};"
-        f"UID={user};"
-        f"PWD={password};"
-        f"Encrypt=yes;"
-        f"TrustServerCertificate=no;"
+    connection = pymssql.connect(
+        server=server,
+        user=user,
+        password=password,
+        database=database,
+        tds_version="7.3",
     )
-    connection = pyodbc.connect(connection_string)
     return connection
 
 
 def row_to_dict(cursor, row):
     """
-    Converts a pyodbc Row object into a dictionary using column names.
+    Converts a pymssql Row object into a dictionary using column names.
     This makes it easy to access columns by name in Jinja2 templates
     (e.g., book.Title, book.Author).
     """
@@ -50,7 +47,7 @@ def row_to_dict(cursor, row):
 
 
 def rows_to_dicts(cursor, rows):
-    """Converts a list of pyodbc Row objects into a list of dictionaries."""
+    """Converts a list of pymssql Row objects into a list of dictionaries."""
     columns = [column[0] for column in cursor.description]
     return [dict(zip(columns, row)) for row in rows]
 
@@ -74,10 +71,10 @@ def index():
 
     if search_term:
         # Use LIKE with wildcards for partial matching
-        # ? is the parameterized placeholder for pyodbc (NOT %s)
+        # %s is the parameterized placeholder for pymssql
         query = """
             SELECT * FROM bookinfo
-            WHERE Title LIKE ? OR Genre LIKE ?
+            WHERE Title LIKE %s OR Genre LIKE %s
             ORDER BY Title
         """
         wildcard = f"%{search_term}%"
@@ -131,14 +128,14 @@ def add_book():
             cursor = conn.cursor()
             query = """
                 INSERT INTO bookinfo (BookID, Title, Author, Genre, AvailableCopies)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
             """
             cursor.execute(query, (book_id, title, author, genre, available_copies))
             conn.commit()
             cursor.close()
             conn.close()
             flash("Book added successfully!", "success")
-        except pyodbc.IntegrityError:
+        except pymssql.IntegrityError:
             flash(f"A book with ID '{book_id}' already exists.", "error")
             return render_template("add.html")
 
@@ -172,7 +169,7 @@ def edit_book(bookid):
         # --- Basic Validation ---
         if not all([title, author, genre, available_copies]):
             flash("All fields are required.", "error")
-            cursor.execute("SELECT * FROM bookinfo WHERE BookID = ?", (bookid,))
+            cursor.execute("SELECT * FROM bookinfo WHERE BookID = %s", (bookid,))
             book = row_to_dict(cursor, cursor.fetchone())
             cursor.close()
             conn.close()
@@ -184,7 +181,7 @@ def edit_book(bookid):
                 raise ValueError
         except ValueError:
             flash("Available Copies must be a non-negative integer.", "error")
-            cursor.execute("SELECT * FROM bookinfo WHERE BookID = ?", (bookid,))
+            cursor.execute("SELECT * FROM bookinfo WHERE BookID = %s", (bookid,))
             book = row_to_dict(cursor, cursor.fetchone())
             cursor.close()
             conn.close()
@@ -193,8 +190,8 @@ def edit_book(bookid):
         # --- Update the record using parameterized query ---
         query = """
             UPDATE bookinfo
-            SET Title = ?, Author = ?, Genre = ?, AvailableCopies = ?
-            WHERE BookID = ?
+            SET Title = %s, Author = %s, Genre = %s, AvailableCopies = %s
+            WHERE BookID = %s
         """
         cursor.execute(query, (title, author, genre, available_copies, bookid))
         conn.commit()
@@ -204,7 +201,7 @@ def edit_book(bookid):
         return redirect(url_for("index"))
 
     # GET request — fetch existing book data for the form
-    cursor.execute("SELECT * FROM bookinfo WHERE BookID = ?", (bookid,))
+    cursor.execute("SELECT * FROM bookinfo WHERE BookID = %s", (bookid,))
     book = row_to_dict(cursor, cursor.fetchone())
     cursor.close()
     conn.close()
@@ -228,7 +225,7 @@ def delete_book(bookid):
     """
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM bookinfo WHERE BookID = ?", (bookid,))
+    cursor.execute("DELETE FROM bookinfo WHERE BookID = %s", (bookid,))
     conn.commit()
     cursor.close()
     conn.close()
